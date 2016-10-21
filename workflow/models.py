@@ -3,94 +3,18 @@ from __future__ import unicode_literals
 
 import datetime
 
-import django.dispatch
 from django.db import models
-from django.core.exceptions import ObjectDoesNotExist
 from django.utils.translation import ugettext_lazy as _, ugettext as __
 from django.contrib.auth.models import User, Group
 
-
-class UnableToActivateWorkflow(Exception):
-    """
-    To be raised if unable to activate the workflow because it did not pass the
-    validation steps
-    """
-
-
-class UnableToCloneWorkflow(Exception):
-    """
-    To be raised if unable to clone a workflow model (and related models)
-    """
-
-
-class UnableToStartWorkflow(Exception):
-    """
-    To be raised if a WorkflowActivity is unable to start a workflow
-    """
-
-
-class UnableToProgressWorkflow(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to progress a workflow with a
-    particular transition.
-    """
-
-
-class UnableToLogWorkflowEvent(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to log an event in the
-    WorkflowHistory
-    """
-
-
-class UnableToAddCommentToWorkflow(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to log a comment in the
-    WorkflowHistory
-    """
-
-
-class UnableToDisableParticipant(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to disable a participant
-    """
-
-
-class UnableToEnableParticipant(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to enable a participant
-    """
-
-
-# Fired when a role is assigned to a user for a particular run of a workflow
-# (defined in the WorkflowActivity). The sender is an instance of the
-# WorkflowHistory model logging this event.
-role_assigned = django.dispatch.Signal()
-# Fired when a role is removed from a user for a particular run of a workflow
-# (defined in the WorkflowActivity). The sender is an instance of the
-# WorkflowHistory model logging this event.
-role_removed = django.dispatch.Signal()
-# Fired when a new WorkflowActivity starts navigating a workflow. The sender is
-# an instance of the WorkflowActivity model
-workflow_started = django.dispatch.Signal()
-# Fired just before a WorkflowActivity creates a new item in the Workflow History
-# (the sender is an instance of the WorkflowHistory model)
-workflow_pre_change = django.dispatch.Signal()
-# Fired after a WorkflowActivity creates a new item in the Workflow History (the
-# sender is an instance of the WorkflowHistory model)
-workflow_post_change = django.dispatch.Signal()
-# Fired when a WorkflowActivity causes a transition to a new state (the sender is
-# an instance of the WorkflowHistory model)
-workflow_transitioned = django.dispatch.Signal()
-# Fired when some event happens during the life of a WorkflowActivity (the 
-# sender is an instance of the WorkflowHistory model)
-workflow_event_completed = django.dispatch.Signal()
-# Fired when a comment is created during the lift of a WorkflowActivity (the
-# sender is an instance of the WorkflowHistory model)
-workflow_commented = django.dispatch.Signal()
-# Fired when an active WorkflowActivity reaches a workflow's end state. The
-# sender is an instance of the WorkflowActivity model
-workflow_ended = django.dispatch.Signal()
+from workflow.signals import (
+    workflow_started, workflow_pre_change, workflow_post_change,
+    workflow_transitioned, workflow_event, workflow_ended
+)
+from workflow.exceptions import (
+    UnableToActivateWorkflow, UnableToStartWorkflow, UnableToProgressWorkflow,
+    UnableToLogWorkflowEvent, UnableToDisableParticipant, UnableToEnableParticipant
+)
 
 
 class Workflow(models.Model):
@@ -99,26 +23,11 @@ class Workflow(models.Model):
     aim through a series of related states / transitions. A name for a directed
     graph.
     """
-
-    # A workflow can be in one of three states:
-    # 
-    # * definition: you're building the thing to meet whatever requirements you
-    # have
-    #
-    # * active: you're using the defined workflow in relation to things in your
-    # application - the workflow definition is frozen from this point on.
-    #
-    # * retired: you no longer use the workflow (but we keep it so it can be 
-    # cloned as the basis of new workflows starting in the definition state)
-    #
-    # Why do this? Imagine the mess that could be created if a "live" workflow
-    # was edited and states were deleted or orphaned. These states at least
-    # allow us to check things don't go horribly wrong. :-/
     DEFINITION = 0
     ACTIVE = 1
     RETIRED = 2
 
-    STATUS_CHOICE_LIST = (
+    STATUS_CHOICE = (
         (DEFINITION, _('In definition')),
         (ACTIVE, _('Active')),
         (RETIRED, _('Retired')),
@@ -126,17 +35,10 @@ class Workflow(models.Model):
 
     name = models.CharField(_('Workflow Name'), max_length=128)
     slug = models.SlugField(_('Slug'))
-    description = models.TextField(_('Description'), blank=True)
-    status = models.IntegerField(_('Status'), choices=STATUS_CHOICE_LIST, default=DEFINITION)
+    description = models.TextField(_('Description'), blank=True, default='')
+    status = models.IntegerField(_('Status'), choices=STATUS_CHOICE, default=DEFINITION)
     created_by = models.ForeignKey(User)
     created_on = models.DateTimeField(auto_now_add=True)
-
-    # To hold error messages created in the validate method
-    errors = {
-        'workflow': [],
-        'states': {},
-        'transitions': {},
-    }
 
     class Meta:
         ordering = ['status', 'name']
@@ -195,23 +97,6 @@ class Workflow(models.Model):
                 )
                 valid = False
 
-        # Check the role collections are compatible between states and
-        # transitions (i.e. there cannot be any transitions that are only
-        # available to participants with roles that are not also roles
-        # associated with the parent state).
-        for state in all_states:
-            # *at least* one role from the state must also be associated
-            # with each transition where the state is the from_state
-            state_roles = state.roles.all()
-            for transition in state.transitions_from.all():
-                if not transition.roles.filter(pk__in=[r.id for r in state_roles]):
-                    if transition.id not in self.errors['transitions']:
-                        self.errors['transitions'][transition.id] = list()
-                    self.errors['transitions'][transition.id].append(
-                        __('This transition is not navigable '
-                           'because none of the roles associated with the parent state have permission to use it.')
-                    )
-                    valid = False
         return valid
 
     def has_errors(self, thing):
@@ -240,7 +125,7 @@ class Workflow(models.Model):
         contains exactly one start state and at least one end state
         """
         # Only workflows in definition state can be activated
-        if not self.status == self.DEFINITION:
+        if self.status != self.DEFINITION:
             raise UnableToActivateWorkflow(
                 __('Only workflows in the "definition" state may be activated')
             )
@@ -286,19 +171,15 @@ class State(models.Model):
     )
 
     name = models.CharField(_('Name'), max_length=256)
-    description = models.TextField(_('Description'), blank=True)
+    description = models.TextField(_('Description'), blank=True, default='')
     is_start_state = models.BooleanField(_('Is the start state?'), default=False)
     is_end_state = models.BooleanField(_('Is an end state?'), default=False)
     workflow = models.ForeignKey(Workflow, related_name='states')
-    # The groups defined here define *who* has permission to view the item in this state.
+    # The users and groups defined here define *who* has permission to
+    # view the item in this state.
+    users = models.ManyToManyField(User, blank=True)
     groups = models.ManyToManyField(Group, blank=True)
-    # The following two fields allow a specification of expected duration to be
-    # associated with a state. The estimation_value field stores the amount of 
-    # time, whilst estimation_unit stores the unit of time estimation_value is
-    # in. For example, estimation_value=5, estimation_unit=DAY means something
-    # is expected to be in this state for 5 days. By doing estimation_value *
-    # estimation_unit we can get the number of seconds to pass into a timedelta
-    # to discover when the deadline for a state is.
+    # 下面两个字段指定这个状态的过期时间
     estimation_value = models.IntegerField(
             _('Estimated time (value)'), default=0,
             help_text=_('Use whole numbers')
@@ -318,7 +199,7 @@ class State(models.Model):
         from datetime.today()
         """
         if self.estimation_value > 0:
-            duration = datetime.timedelta(seconds=(self.estimation_value*self.estimation_unit))
+            duration = datetime.timedelta(seconds=(self.estimation_value * self.estimation_unit))
             return datetime.datetime.today() + duration
         else:
             return None
@@ -333,11 +214,13 @@ class Transition(models.Model):
     between state "nodes" in a directed graph.
     """
     name = models.CharField(_('Name of transition'), max_length=128)
+    description = models.TextField(_('Description'), blank=True, default='')
     workflow = models.ForeignKey(Workflow, related_name='transitions')
     from_state = models.ForeignKey(State, related_name='transitions_from')
     to_state = models.ForeignKey(State, related_name='transitions_into')
-    # The groups referenced here define *who* has permission to use this
-    # transition to move between states.
+    # The users and groups referenced here define *who* has permission to
+    # use this transition to move between states.
+    users = models.ManyToManyField(User, blank=True)
     groups = models.ManyToManyField(Group, blank=True)
 
     def __unicode__(self):
@@ -346,51 +229,6 @@ class Transition(models.Model):
     class Meta:
         verbose_name = _('Transition')
         verbose_name_plural = _('Transitions')
-
-
-class EventType(models.Model):
-    """
-    Defines the types of event that can be associated with a workflow. Examples
-    might include: meeting, deadline, review, assessment etc...
-    """
-    name = models.CharField(_('Event Type Name'), max_length=256)
-    description = models.TextField(_('Description'), blank=True)
-
-    def __unicode__(self):
-        return self.name
-
-
-class Event(models.Model):
-    """
-    A definition of something that is supposed to happen when in a particular state.
-    """
-    name = models.CharField(_('Event summary'), max_length=256)
-    description = models.TextField(_('Description'), blank=True)
-    # The workflow field is the result of denormalization to help with the
-    # Workflow class's clone() method.
-    # Also, workflow and state can be nullable so an event can be treated as
-    # "generic" for all workflows / states in the database.
-    workflow = models.ForeignKey(Workflow, related_name='events', null=True, blank=True)
-    state = models.ForeignKey(State, related_name='events', null=True, blank=True)
-    # The groups referenced here indicate *who* is supposed to be a part of the event
-    groups = models.ManyToManyField(Group)
-    # The event types referenced here help define what sort of event this is.
-    # For example, a meeting and review (an event might be of more than one
-    # type)
-    event_types = models.ManyToManyField(EventType)
-    # If this field is true then the workflow cannot progress beyond the related
-    # state without it first appearing in the workflow history
-    is_mandatory = models.BooleanField(
-            _('Mandatory event'), default=False,
-            help_text=_('This event must be marked as complete before moving out of the associated state.')
-        )
-
-    class Meta:
-        verbose_name = _('Event')
-        verbose_name_plural = _('Events')
-
-    def __unicode__(self):
-        return self.name
 
 
 class WorkflowActivity(models.Model):
@@ -404,12 +242,12 @@ class WorkflowActivity(models.Model):
     workflow = models.ForeignKey(Workflow)
     created_by = models.ForeignKey(User)
     created_on = models.DateTimeField(auto_now_add=True)
-    completed_on = models.DateTimeField(null=True, blank=True)
+    completed_on = models.DateTimeField(blank=True, null=True)
 
     class Meta:
-        ordering = ['-completed_on', '-created_on']
+        ordering = ['-created_on', '-completed_on']
         verbose_name = _('Workflow Activity')
-        verbose_name_plural = _('Workflow Activites')
+        verbose_name_plural = _('Workflow Activities')
         permissions = (
             ('can_start_workflow', __('Can start a workflow')),
             ('can_assign_roles', __('Can assign roles'))
@@ -421,7 +259,7 @@ class WorkflowActivity(models.Model):
         current state this WorkflowActivity is in.
         """
         if self.history.all():
-            return self.history.all()[0]
+            return self.history.all().first()
         else:
             return None
 
@@ -431,43 +269,37 @@ class WorkflowActivity(models.Model):
         workflow defined in the "workflow" field after validating the workflow
         activity is in a state appropriate for "starting"
         """
-        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-
         start_state_result = State.objects.filter(workflow=self.workflow, is_start_state=True)
-        # Validation...
+        # Validation
         # 1. The workflow activity isn't already started
         if self.current_state():
             if self.current_state().state:
                 raise UnableToStartWorkflow(__('Already started'))
-        # 2. The workflow activity hasn't been force_stopped before being 
-        # started
+        # 2. The workflow activity hasn't been force_stopped before being started
         if self.completed_on:
             raise UnableToStartWorkflow(__('Already completed'))
         # 3. There is exactly one start state
-        if not len(start_state_result) == 1:
+        if start_state_result.count() != 1:
             raise UnableToStartWorkflow(__('Cannot find single start state'))
 
         first_step = WorkflowHistory(
                 workflowactivity=self,
-                state=start_state_result[0],
+                state=start_state_result.first(),
                 log_type=WorkflowHistory.TRANSITION,
-                participant=participant,
                 note=__('Started workflow'),
-                deadline=start_state_result[0].deadline()
+                deadline=start_state_result.first().deadline()
             )
         first_step.save()
         return first_step
 
     def progress(self, transition, user, note=''):
         """
-        Attempts to progress a workflow activity with the specified transition 
-        as requested by the specified participant.
+        Attempts to progress a workflow activity with the specified transition
 
         The transition is validated (to make sure it is a legal "move" in the
         directed graph) and the method returns the new WorkflowHistory state or
         raises an UnableToProgressWorkflow exception.
         """
-        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
         # Validate the transition
         current_state = self.current_state()
 
@@ -475,32 +307,18 @@ class WorkflowActivity(models.Model):
         if not current_state:
             raise UnableToProgressWorkflow(__('Start the workflow before attempting to transition'))
         # 2. Make sure it's parent is the current state
-        if not transition.from_state == current_state.state:
+        if transition.from_state != current_state.state:
             raise UnableToProgressWorkflow(__('Transition not valid (wrong parent)'))
-        # 3. Make sure all mandatory events for the current state are found in
-        # the WorkflowHistory
-        mandatory_events = current_state.state.events.filter(is_mandatory=True)
-        for me in mandatory_events:
-            if not me.history.filter(workflowactivity=self):
-                raise UnableToProgressWorkflow(__('Transition not valid (mandatory event missing)'))
-        # 4. Make sure the user has the appropriate role to allow them to make
-        # the transition
-        if not transition.roles.filter(pk__in=[role.id for role in participant.roles.all()]):
-            raise UnableToProgressWorkflow(
-                __('Participant has insufficient authority to use the specified transition')
-            )
+
         # The "progress" request has been validated to store the transition into
         # the appropriate WorkflowHistory record and if it is an end state then
         # update this WorkflowActivity's record with the appropriate timestamp
-        if not note:
-            note = transition.name
         wh = WorkflowHistory(
                 workflowactivity=self,
                 state=transition.to_state,
                 log_type=WorkflowHistory.TRANSITION,
                 transition=transition,
-                participant=participant,
-                note=note,
+                note=note if note else transition.name,
                 deadline=transition.to_state.deadline()
             )
         wh.save()
@@ -510,236 +328,26 @@ class WorkflowActivity(models.Model):
             self.save()
         return wh
 
-    def log_event(self, event, user, note=''):
-        """
-        Logs the occurance of an event in the WorkflowHistory of a 
-        WorkflowActivity and returns the resulting record.
-
-        If the event is associated with a workflow or state then this method
-        validates that the event is associated with the workflow, that the
-        participant logging the event is also one of the event participants and
-        if the event is mandatory then it must be done whilst in the
-        appropriate state.
-        """
-        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-        current_state = self.current_state()
-        if event.workflow:
-            # Make sure we have an event for the right workflow
-            if not event.workflow == self.workflow:
-                raise UnableToLogWorkflowEvent(
-                    __('The event is not associated with the workflow for the WorkflowActivity')
-                )
-            if event.state:
-                # If the event is mandatory then it must be completed whilst in
-                # the associated state
-                if event.is_mandatory:
-                    if not event.state == current_state.state:
-                        raise UnableToLogWorkflowEvent(
-                            __('The mandatory event is not associated with the current state')
-                        )
-        if event.roles.all():
-            # Make sure the participant is associated with the event
-            if not event.roles.filter(pk__in=[p.id for p in participant.roles.all()]):
-                raise UnableToLogWorkflowEvent(
-                    __('The participant is not associated with the specified event')
-                )
-        if not note:
-            note = event.name
-
-        current_state = self.current_state().state if self.current_state() else None
-        deadline = self.current_state().deadline if self.current_state() else None
-        wh = WorkflowHistory(
-                workflowactivity=self,
-                state=current_state,
-                log_type=WorkflowHistory.EVENT,
-                event=event,
-                participant=participant,
-                note=note,
-                deadline=deadline
-            )
-        wh.save()
-        return wh
-
-    def add_comment(self, user, note):
+    def log_event(self, user, note):
         """
         In many sorts of workflow it is necessary to add a comment about
         something at a particular state in a WorkflowActivity. 
         """
         if not note:
-            raise UnableToAddCommentToWorkflow(__('Cannot add an empty comment'))
+            raise UnableToLogWorkflowEvent(__('Cannot add an empty note'))
         p, created = Participant.objects.get_or_create(workflowactivity=self, user=user)
         current_state = self.current_state().state if self.current_state() else None
         deadline = self.current_state().deadline if self.current_state() else None
         wh = WorkflowHistory(
                 workflowactivity=self,
                 state=current_state,
-                log_type=WorkflowHistory.COMMENT,
+                log_type=WorkflowHistory.EVENT,
                 participant=p,
                 note=note,
                 deadline=deadline
             )
         wh.save()
         return wh
-
-    def assign_role(self, user, assignee, role):
-        """
-        Assigns the role to the assignee for this instance of a workflow 
-        activity. The arg 'user' logs who made the assignment
-        """
-        p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-        p_as_assignee, created = Participant.objects.get_or_create(workflowactivity=self, user=assignee)
-        p_as_assignee.roles.add(role)
-        name = assignee.get_full_name() if assignee.get_full_name() else assignee.username
-        note = _('Role "%s" assigned to %s') % (role.__unicode__(), name)
-        current_state = self.current_state().state if self.current_state() else None
-        deadline = self.current_state().deadline if self.current_state() else None
-        wh = WorkflowHistory(
-                workflowactivity=self,
-                state=current_state,
-                log_type=WorkflowHistory.ROLE,
-                participant=p_as_user,
-                note=note,
-                deadline=deadline
-            )
-        wh.save()
-        role_assigned.send(sender=wh)
-        return wh
-
-    def remove_role(self, user, assignee, role):
-        """
-        Removes the role from the assignee. The 'user' argument is used for
-        logging purposes.
-        """
-        try:
-            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-            p_as_assignee = Participant.objects.get(workflowactivity=self, user=assignee)
-            if role in p_as_assignee.roles.all():
-                p_as_assignee.roles.remove(role)
-                name = assignee.get_full_name() if assignee.get_full_name() else assignee.username
-                note = _('Role "%s" removed from %s') % (role.__unicode__(), name)
-                current_state = self.current_state().state if self.current_state() else None
-                deadline = self.current_state().deadline if self.current_state() else None
-                wh = WorkflowHistory(
-                        workflowactivity=self,
-                        state=current_state,
-                        log_type=WorkflowHistory.ROLE,
-                        participant=p_as_user,
-                        note=note,
-                        deadline=deadline
-                    )
-                wh.save()
-                role_removed.send(sender=wh)
-                return wh
-            else:
-                # The role isn't associated with the assignee anyway so there is
-                # nothing to do
-                return None
-        except ObjectDoesNotExist:
-            # If we can't find the assignee as a participant then there is 
-            # nothing to do
-            return None
-
-    def clear_roles(self, user, assignee):
-        """
-        Clears all the roles from assignee. The 'user' argument is used for
-        logging purposes.
-        """
-        try:
-            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-            p_as_assignee = Participant.objects.get(workflowactivity=self, user=assignee)
-            p_as_assignee.roles.clear()
-            name = assignee.get_full_name() if assignee.get_full_name() else assignee.username
-            note = _('All roles removed from %s') % name
-            current_state = self.current_state().state if self.current_state() else None
-            deadline = self.current_state().deadline if self.current_state() else None
-            wh = WorkflowHistory(
-                        workflowactivity=self,
-                        state=current_state,
-                        log_type=WorkflowHistory.ROLE,
-                        participant=p_as_user,
-                        note=note,
-                        deadline=deadline
-                    )
-            wh.save()
-            role_removed.send(sender=wh)
-            return wh
-        except ObjectDoesNotExist:
-            # If we can't find the assignee then there is nothing to do
-            pass
-
-    def disable_participant(self, user, user_to_disable, note):
-        """
-        Mark the user_to_disable as disabled. Must include a note explaining
-        reasons for this action. Also the 'user' arg is used for logging who
-        carried this out
-        """
-        if not note:
-            raise UnableToDisableParticipant(
-                __('Must supply a reason for disabling a participant. None given.')
-            )
-        try:
-            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-            p_to_disable = Participant.objects.get(workflowactivity=self, user=user_to_disable)
-            if not p_to_disable.disabled:
-                p_to_disable.disabled = True
-                p_to_disable.save()
-                name = user_to_disable.get_full_name() if user_to_disable.get_full_name() else user_to_disable.username
-                note = _('Participant %s disabled with the reason: %s') % (name, note)
-                current_state = self.current_state().state if self.current_state() else None
-                deadline = self.current_state().deadline if self.current_state() else None
-                wh = WorkflowHistory(
-                            workflowactivity=self,
-                            state=current_state,
-                            log_type=WorkflowHistory.ROLE,
-                            participant=p_as_user,
-                            note=note,
-                            deadline=deadline
-                        )
-                wh.save()
-                return wh
-            else:
-                # They're already disabled
-                return None
-        except ObjectDoesNotExist:
-            # If we can't find the assignee then there is nothing to do
-            return None
-
-    def enable_participant(self, user, user_to_enable, note):
-        """
-        Mark the user_to_enable as enabled. Must include a note explaining
-        reasons for this action. Also the 'user' arg is used for logging who
-        carried this out
-        """
-        if not note:
-            raise UnableToEnableParticipant(
-                __('Must supply a reason for enabling a disabled participant. None given.')
-            )
-        try:
-            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
-            p_to_enable = Participant.objects.get(workflowactivity=self, user=user_to_enable)
-            if p_to_enable.disabled:
-                p_to_enable.disabled = False 
-                p_to_enable.save()
-                name = user_to_enable.get_full_name() if user_to_enable.get_full_name() else user_to_enable.username
-                note = _('Participant %s enabled with the reason: %s') % (name, note)
-                current_state = self.current_state().state if self.current_state() else None
-                deadline = self.current_state().deadline if self.current_state() else None
-                wh = WorkflowHistory(
-                            workflowactivity=self,
-                            state=current_state,
-                            log_type=WorkflowHistory.ROLE,
-                            participant=p_as_user,
-                            note=note,
-                            deadline=deadline
-                        )
-                wh.save()
-                return wh
-            else:
-                # The participant is already enabled
-                return None
-        except ObjectDoesNotExist:
-            # If we can't find the participant then there is nothing to do
-            return None 
 
     def force_stop(self, user, reason):
         """
@@ -767,33 +375,6 @@ class WorkflowActivity(models.Model):
         self.save()
 
 
-class Participant(models.Model):
-    """
-    Defines which users have what roles in a particular run of a workflow
-    """
-    user = models.ForeignKey(User)
-    # can be nullable because a participant *might* not have a role assigned to
-    # them (yet), and is many-to-many as they might have many different roles.
-    groups = models.ManyToManyField(Group, null=True)
-    workflowactivity = models.ForeignKey(WorkflowActivity, related_name='participants')
-    disabled = models.BooleanField(default=False)
-
-    class Meta:
-        ordering = ['-disabled', 'workflowactivity', 'user']
-        verbose_name = _('Participant')
-        verbose_name_plural = _('Participants')
-        unique_together = ('user', 'workflowactivity')
-
-    def __unicode__(self):
-        name = self.user.get_full_name() if self.user.get_full_name() else self.user.username
-        if self.roles.all():
-            roles = ' - ' + ', '.join([r.__unicode__() for r in self.roles.all()])
-        else:
-            roles = ''
-        disabled = _(' (disabled)') if self.disabled else ''
-        return '%s%s%s' % (name, roles, disabled)
-
-
 class WorkflowHistory(models.Model):
     """
     Records what has happened and when in a particular run of a workflow. The
@@ -804,20 +385,15 @@ class WorkflowHistory(models.Model):
     # The sort of things we can log in the workflow history
     TRANSITION = 1
     EVENT = 2
-    ROLE = 3
-    COMMENT = 4
 
-    # Used to indicate what sort of thing we're logging in the workflow history
-    TYPE_CHOICE_LIST = (
+    LOG_TYPE_CHOICE = (
         (TRANSITION, _('Transition')),
         (EVENT, _('Event')),
-        (ROLE, _('Role')),
-        (COMMENT, _('Comment')),
     )
 
     workflowactivity = models.ForeignKey(WorkflowActivity, related_name='history')
     log_type = models.IntegerField(
-            choices=TYPE_CHOICE_LIST,
+            choices=LOG_TYPE_CHOICE,
             help_text=_('The sort of thing being logged')
         )
     state = models.ForeignKey(
@@ -828,15 +404,7 @@ class WorkflowHistory(models.Model):
             Transition, null=True, related_name='history',
             help_text=_('The transition relating to this happening in the workflow history')
         )
-    event = models.ForeignKey(
-            Event, null=True, related_name='history',
-            help_text=_('The event relating to this happening in the workflow history')
-        )
-    participant = models.ForeignKey(
-            Participant,
-            help_text=_('The participant who triggered this happening in the workflow history')
-        )
-    note = models.TextField(_('Note'), blank=True)
+    note = models.TextField(_('Note'), blank=True, default='')
     created_on = models.DateTimeField(auto_now_add=True)
     deadline = models.DateTimeField(
             _('Deadline'), null=True, blank=True,
@@ -854,10 +422,8 @@ class WorkflowHistory(models.Model):
         workflow_post_change.send(sender=self)
         if self.log_type == self.TRANSITION:
             workflow_transitioned.send(sender=self)
-        if self.log_type == self.EVENT:
-            workflow_event_completed.send(sender=self)
-        if self.log_type == self.COMMENT:
-            workflow_commented.send(sender=self)
+        elif self.log_type == self.EVENT:
+            workflow_event.send(sender=self)
         if self.state:
             if self.state.is_start_state:
                 workflow_started.send(sender=self.workflowactivity)
