@@ -3,15 +3,14 @@ from __future__ import unicode_literals
 
 from django.contrib import admin
 
-from .models import Workflow, State, Transition
+from .models import Workflow, State, Transition, WorkflowActivity, WorkflowHistory
 
 
 @admin.register(Workflow)
 class WorkflowAdmin(admin.ModelAdmin):
-    list_display = ['name', 'description', 'status', 'created_on', 'created_by', 'cloned_from']
+    list_display = ['name', 'description', 'status', 'created_by', 'created_on']
     search_fields = ['name', 'description']
     save_on_top = True
-    exclude = ['created_on', 'cloned_from']
     list_filter = ['status']
 
 
@@ -24,21 +23,23 @@ class StateAdmin(admin.ModelAdmin):
 
 @admin.register(Transition)
 class TransitionAdmin(admin.ModelAdmin):
-    list_display = ['name', 'from_state', 'to_state']
-    search_fields = ['name']
-    save_on_top = True
-
-
-@admin.register(EventType)
-class EventTypeAdmin(admin.ModelAdmin):
-    list_display = ['name', 'description']
-    save_on_top = True
+    list_display = ['name', 'description', 'from_state', 'to_state']
     search_fields = ['name', 'description']
-
-
-@admin.register(Event)
-class EventAdmin(admin.ModelAdmin):
-    list_display = ['name', 'description', 'workflow', 'state', 'is_mandatory']
     save_on_top = True
-    search_fields = ['name', 'description']
-    list_filter = ['event_types', 'is_mandatory']
+
+
+@admin.register(WorkflowActivity)
+class WorkflowActivityAdmin(admin.ModelAdmin):
+    list_display = ['id', 'workflow']
+    save_on_top = True
+    search_fields = ['id']
+
+
+@admin.register(WorkflowHistory)
+class WorkflowHistoryAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'workflowactivity', 'log_type', 'state', 'transition', 'note', 'deadline', 'created_by', 'created_on'
+    ]
+    save_on_top = True
+    search_fields = ['id']
+    list_filter = ['id', 'log_type']
