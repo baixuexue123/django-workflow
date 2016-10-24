@@ -3,7 +3,10 @@ from __future__ import unicode_literals
 
 from django.contrib import admin
 
-from .models import Workflow, State, Transition, WorkflowActivity, WorkflowHistory
+from .models import (
+    Workflow, State, Transition, WorkflowActivity, WorkflowHistory,
+    WorkflowModelRelation, WorkflowObjectRelation
+)
 
 
 @admin.register(Workflow)
@@ -38,8 +41,23 @@ class WorkflowActivityAdmin(admin.ModelAdmin):
 @admin.register(WorkflowHistory)
 class WorkflowHistoryAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'workflowactivity', 'log_type', 'state', 'transition', 'note', 'deadline', 'created_by', 'created_on'
+        'id', 'workflowactivity', 'log_type', 'state', 'transition',
+        'note', 'deadline', 'created_by', 'created_on'
     ]
     save_on_top = True
     search_fields = ['id']
-    list_filter = ['id', 'log_type']
+    list_filter = ['log_type']
+
+
+@admin.register(WorkflowModelRelation)
+class WorkflowModelRelationAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'content_object', 'workflow'
+    ]
+
+
+@admin.register(WorkflowObjectRelation)
+class WorkflowObjectRelationAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'content_type', 'workflow'
+    ]

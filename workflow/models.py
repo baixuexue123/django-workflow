@@ -6,6 +6,8 @@ import datetime
 from django.db import models
 from django.utils.translation import ugettext_lazy as _, ugettext as __
 from django.contrib.auth.models import User, Group
+from django.contrib.contenttypes import generic
+from django.contrib.contenttypes.models import ContentType
 
 from workflow.signals import (
     workflow_started, workflow_pre_change, workflow_post_change,
@@ -34,6 +36,7 @@ class Workflow(models.Model):
     )
 
     name = models.CharField(_('Workflow Name'), max_length=128)
+    label = models.CharField(_('Workflow label'), max_length=64)
     slug = models.SlugField(_('Slug'))
     description = models.TextField(_('Description'), blank=True, default='')
     status = models.IntegerField(_('Status'), choices=STATUS_CHOICE, default=DEFINITION)
@@ -180,6 +183,7 @@ class State(models.Model):
     users = models.ManyToManyField(User, blank=True)
     groups = models.ManyToManyField(Group, blank=True)
     # 下面两个字段指定这个状态的过期时间
+    # TODO models.DurationField
     estimation_value = models.IntegerField(
             _('Estimated time (value)'), default=0,
             help_text=_('Use whole numbers')
@@ -430,3 +434,53 @@ class WorkflowHistory(models.Model):
 
     def __unicode__(self):
         return '%s created by %s' % (self.note, self.user.get_full_name())
+
+
+class WorkflowObjectRelation(models.Model):
+    """Stores an workflow of an object.
+    Provides a way to give any object a workflow without changing the object's
+    model.
+    **Attributes:**
+    content
+        The object for which the workflow is stored. This can be any instance of
+        a Django model.
+    workflow
+        The workflow which is assigned to an object. This needs to be a workflow
+        instance.
+    """
+
+    content_type = models.ForeignKey(ContentType, related_name='workflow_object')
+    content_id = models.PositiveIntegerField()
+    content_object = generic.GenericForeignKey(ct_field='content_type', fk_field='content_id')
+    workflow = models.ForeignKey(Workflow, verbose_name=_('Workflow'))
+
+    class Meta:
+        unique_together = ('content_type', 'content_id')
+        verbose_name = _('Workflow object relation')
+        verbose_name_plural = _('Workflow object relations')
+
+    def __unicode__(self):
+        return '%s %s - %s' % (self.content_type, self.content_id, self.workflow.name)
+
+
+class WorkflowModelRelation(models.Model):
+    """Stores an workflow for a model (ContentType).
+    Provides a way to give any object a workflow without changing the model.
+    **Attributes:**
+    Content Type
+        The content type for which the workflow is stored. This can be any
+        instance of a Django model.
+    workflow
+        The workflow which is assigned to an object. This needs to be a
+        workflow instance.
+    """
+
+    class Meta:
+        verbose_name = _('Workflow model relation')
+        verbose_name_plural = _('Workflow model relations')
+
+    content_type = models.ForeignKey(ContentType, verbose_name=_('Content Type'))
+    workflow = models.ForeignKey(Workflow, verbose_name=_('Workflow'))
+
+    def __unicode__(self):
+        return '%s - %s' % (self.content_type.name, self.workflow.name)
