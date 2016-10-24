@@ -1,6 +1,6 @@
 import django.conf.global_settings as DEFAULT_SETTINGS
 
-SECRET_KEY = 'workflowisawesome'
+SECRET_KEY = 'workflow'
 
 DATABASES = {
     'default': {

@@ -21,20 +21,8 @@ class UnableToProgressWorkflow(Exception):
     """
 
 
-class UnableToLogWorkflowEvent(Exception):
+class UnableToAddCommentToWorkflow(Exception):
     """
-    To be raised if the WorkflowActivity is unable to log an event in the
+    To be raised if the WorkflowActivity is unable to log a comment in the
     WorkflowHistory
-    """
-
-
-class UnableToDisableParticipant(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to disable a participant
-    """
-
-
-class UnableToEnableParticipant(Exception):
-    """
-    To be raised if the WorkflowActivity is unable to enable a participant
     """

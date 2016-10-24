@@ -18,9 +18,9 @@ workflow_post_change = django.dispatch.Signal()
 # an instance of the WorkflowHistory model)
 workflow_transitioned = django.dispatch.Signal()
 
-# Fired when some event happens during the life of a WorkflowActivity (the
+# Fired when a comment is created during the lift of a WorkflowActivity (the
 # sender is an instance of the WorkflowHistory model)
-workflow_event = django.dispatch.Signal()
+workflow_commented = django.dispatch.Signal()
 
 # Fired when an active WorkflowActivity reaches a workflow's end state. The
 # sender is an instance of the WorkflowActivity model

@@ -9,11 +9,11 @@ from django.contrib.auth.models import User, Group
 
 from workflow.signals import (
     workflow_started, workflow_pre_change, workflow_post_change,
-    workflow_transitioned, workflow_event, workflow_ended
+    workflow_transitioned, workflow_commented, workflow_ended
 )
 from workflow.exceptions import (
     UnableToActivateWorkflow, UnableToStartWorkflow, UnableToProgressWorkflow,
-    UnableToLogWorkflowEvent, UnableToDisableParticipant, UnableToEnableParticipant
+    UnableToAddCommentToWorkflow,
 )
 
 
@@ -287,6 +287,7 @@ class WorkflowActivity(models.Model):
                 state=start_state_result.first(),
                 log_type=WorkflowHistory.TRANSITION,
                 note=__('Started workflow'),
+                created_by=user,
                 deadline=start_state_result.first().deadline()
             )
         first_step.save()
@@ -302,7 +303,6 @@ class WorkflowActivity(models.Model):
         """
         # Validate the transition
         current_state = self.current_state()
-
         # 1. Make sure the workflow activity is started
         if not current_state:
             raise UnableToProgressWorkflow(__('Start the workflow before attempting to transition'))
@@ -319,6 +319,7 @@ class WorkflowActivity(models.Model):
                 log_type=WorkflowHistory.TRANSITION,
                 transition=transition,
                 note=note if note else transition.name,
+                created_by=user,
                 deadline=transition.to_state.deadline()
             )
         wh.save()
@@ -328,22 +329,21 @@ class WorkflowActivity(models.Model):
             self.save()
         return wh
 
-    def log_event(self, user, note):
+    def add_comment(self, user, note):
         """
         In many sorts of workflow it is necessary to add a comment about
-        something at a particular state in a WorkflowActivity. 
+        something at a particular state in a WorkflowActivity.
         """
         if not note:
-            raise UnableToLogWorkflowEvent(__('Cannot add an empty note'))
-        p, created = Participant.objects.get_or_create(workflowactivity=self, user=user)
+            raise UnableToAddCommentToWorkflow(__('Cannot add an empty comment(note)'))
         current_state = self.current_state().state if self.current_state() else None
-        deadline = self.current_state().deadline if self.current_state() else None
+        deadline = self.current_state().deadline if current_state else None
         wh = WorkflowHistory(
                 workflowactivity=self,
                 state=current_state,
-                log_type=WorkflowHistory.EVENT,
-                participant=p,
+                log_type=WorkflowHistory.COMMENT,
                 note=note,
+                created_by=user,
                 deadline=deadline
             )
         wh.save()
@@ -357,17 +357,14 @@ class WorkflowActivity(models.Model):
         """
         # Lets try to create an appropriate entry in the WorkflowHistory table
         current_state = self.current_state()
-        participant = Participant.objects.get(
-                        workflowactivity=self, 
-                        user=user)
         if current_state:
             final_step = WorkflowHistory(
-                workflowactivity=self,
-                state=current_state.state,
-                log_type=WorkflowHistory.TRANSITION,
-                participant=participant,
-                note=__('Workflow forced to stop! Reason given: %s') % reason,
-                deadline=None
+                    workflowactivity=self,
+                    state=current_state.state,
+                    log_type=WorkflowHistory.TRANSITION,
+                    note=__('Workflow forced to stop! Reason given: %s') % reason,
+                    created_by=user,
+                    deadline=None
                 )
             final_step.save()
 
@@ -384,11 +381,11 @@ class WorkflowHistory(models.Model):
 
     # The sort of things we can log in the workflow history
     TRANSITION = 1
-    EVENT = 2
+    COMMENT = 2
 
     LOG_TYPE_CHOICE = (
         (TRANSITION, _('Transition')),
-        (EVENT, _('Event')),
+        (COMMENT, _('Comment')),
     )
 
     workflowactivity = models.ForeignKey(WorkflowActivity, related_name='history')
@@ -405,9 +402,10 @@ class WorkflowHistory(models.Model):
             help_text=_('The transition relating to this happening in the workflow history')
         )
     note = models.TextField(_('Note'), blank=True, default='')
+    created_by = models.ForeignKey(User)
     created_on = models.DateTimeField(auto_now_add=True)
     deadline = models.DateTimeField(
-            _('Deadline'), null=True, blank=True,
+            _('Deadline'), blank=True, null=True,
             help_text=_('The deadline for staying in this state')
         )
 
@@ -422,8 +420,8 @@ class WorkflowHistory(models.Model):
         workflow_post_change.send(sender=self)
         if self.log_type == self.TRANSITION:
             workflow_transitioned.send(sender=self)
-        elif self.log_type == self.EVENT:
-            workflow_event.send(sender=self)
+        elif self.log_type == self.COMMENT:
+            workflow_commented.send(sender=self)
         if self.state:
             if self.state.is_start_state:
                 workflow_started.send(sender=self.workflowactivity)
@@ -431,4 +429,4 @@ class WorkflowHistory(models.Model):
                 workflow_ended.send(sender=self.workflowactivity)
 
     def __unicode__(self):
-        return '%s created by %s' % (self.note, self.participant.__unicode__())
+        return '%s created by %s' % (self.note, self.user.get_full_name())
