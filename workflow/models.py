@@ -4,6 +4,7 @@ from __future__ import unicode_literals
 import datetime
 
 from django.db import models
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils.translation import ugettext_lazy as _, ugettext as __
 from django.contrib.auth.models import User, Group
 from django.contrib.contenttypes import generic
@@ -17,7 +18,7 @@ from workflow.signals import (
 )
 from workflow.exceptions import (
     UnableToActivateWorkflow, UnableToStartWorkflow, UnableToProgressWorkflow,
-    UnableToAddCommentToWorkflow,
+    UnableToAddCommentToWorkflow, UnableToDisableParticipant, UnableToEnableParticipant
 )
 
 
@@ -179,7 +180,7 @@ class State(models.Model):
         (WEEK, _('Week(s)')),
     )
 
-    name = models.CharField(_('Name'), max_length=256)
+    name = models.CharField(_('Name'), max_length=128)
     description = models.TextField(_('Description'), blank=True, default='')
     is_start_state = models.BooleanField(_('Is the start state?'), default=False)
     is_end_state = models.BooleanField(_('Is an end state?'), default=False)
@@ -214,12 +215,12 @@ class State(models.Model):
         else:
             return None
 
-    def is_visible(self, user):
+    def has_perm_view(self, user):
         if user in self.users.all():
             return True
-        for group in self.groups.all():
-            if user in group.user_set.all():
-                return True
+        # 两个列表存在交集
+        if len(set(user.groups.all()) & set(self.groups.all())) > 0:
+            return True
         return False
 
     def __unicode__(self):
@@ -277,8 +278,6 @@ class WorkflowActivity(models.Model):
         """
         if self.history.all():
             return self.history.all().first()
-        else:
-            return None
 
     def start(self, user):
         """
@@ -286,6 +285,7 @@ class WorkflowActivity(models.Model):
         workflow defined in the "workflow" field after validating the workflow
         activity is in a state appropriate for "starting"
         """
+        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
         start_state_result = State.objects.filter(workflow=self.workflow, is_start_state=True)
         # Validation
         # 1. The workflow activity isn't already started
@@ -304,7 +304,7 @@ class WorkflowActivity(models.Model):
                 state=start_state_result.first(),
                 log_type=WorkflowHistory.TRANSITION,
                 note=__('Started workflow'),
-                created_by=user,
+                participant=participant,
                 deadline=start_state_result.first().deadline()
             )
         first_step.save()
@@ -318,6 +318,7 @@ class WorkflowActivity(models.Model):
         directed graph) and the method returns the new WorkflowHistory state or
         raises an UnableToProgressWorkflow exception.
         """
+        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
         # Validate the transition
         current_state = self.current_state()
         # 1. Make sure the workflow activity is started
@@ -336,7 +337,7 @@ class WorkflowActivity(models.Model):
                 log_type=WorkflowHistory.TRANSITION,
                 transition=transition,
                 note=note if note else transition.name,
-                created_by=user,
+                participant=participant,
                 deadline=transition.to_state.deadline()
             )
         wh.save()
@@ -353,6 +354,7 @@ class WorkflowActivity(models.Model):
         """
         if not note:
             raise UnableToAddCommentToWorkflow(__('Cannot add an empty comment(note)'))
+        participant, created = Participant.objects.get_or_create(workflowactivity=self, user=user)
         current_state = self.current_state().state if self.current_state() else None
         deadline = self.current_state().deadline if current_state else None
         wh = WorkflowHistory(
@@ -360,11 +362,91 @@ class WorkflowActivity(models.Model):
                 state=current_state,
                 log_type=WorkflowHistory.COMMENT,
                 note=note,
-                created_by=user,
+                participant=participant,
                 deadline=deadline
             )
         wh.save()
         return wh
+
+    def add_participant(self, user):
+        pass
+
+    def remove_participant(self, user):
+        pass
+
+    def disable_participant(self, user, user_to_disable, note):
+        """
+        Mark the user_to_disable as disabled. Must include a note explaining
+        reasons for this action. Also the 'user' arg is used for logging who
+        carried this out
+        """
+        if not note:
+            raise UnableToDisableParticipant(__('Must supply a reason for disabling'
+                                                ' a participant. None given.'))
+        try:
+            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
+            p_to_disable = Participant.objects.get(workflowactivity=self, user=user_to_disable)
+            if not p_to_disable.disabled:
+                p_to_disable.disabled = True
+                p_to_disable.save()
+                name = user_to_disable.get_full_name()
+                name = name if name else user_to_disable.username
+                note = _('Participant %s disabled with the reason: %s') % (name, note)
+                current_state = self.current_state().state if self.current_state() else None
+                deadline = self.current_state().deadline if self.current_state() else None
+                wh = WorkflowHistory(
+                        workflowactivity=self,
+                        state=current_state,
+                        log_type=WorkflowHistory.COMMENT,
+                        participant=p_as_user,
+                        note=note,
+                        deadline=deadline
+                    )
+                wh.save()
+                return wh
+            else:
+                # They're already disabled
+                return None
+        except ObjectDoesNotExist:
+            # If we can't find the assignee then there is nothing to do
+            return None
+
+    def enable_participant(self, user, user_to_enable, note):
+        """
+        Mark the user_to_enable as enabled. Must include a note explaining
+        reasons for this action. Also the 'user' arg is used for logging who
+        carried this out
+        """
+        if not note:
+            raise UnableToEnableParticipant(__('Must supply a reason for enabling '
+                                               'a disabled participant. None given.'))
+        try:
+            p_as_user = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
+            p_to_enable = Participant.objects.get(workflowactivity=self, user=user_to_enable)
+            if p_to_enable.disabled:
+                p_to_enable.disabled = False
+                p_to_enable.save()
+                name = user_to_enable.get_full_name()
+                name = name if name else user_to_enable.username
+                note = _('Participant %s enabled with the reason: %s') % (name, note)
+                current_state = self.current_state().state if self.current_state() else None
+                deadline = self.current_state().deadline if self.current_state() else None
+                wh = WorkflowHistory(
+                        workflowactivity=self,
+                        state=current_state,
+                        log_type=WorkflowHistory.COMMENT,
+                        participant=p_as_user,
+                        note=note,
+                        deadline=deadline
+                    )
+                wh.save()
+                return wh
+            else:
+                # The participant is already enabled
+                return None
+        except ObjectDoesNotExist:
+            # If we can't find the participant then there is nothing to do
+            return None
 
     def force_stop(self, user, reason):
         """
@@ -374,19 +456,41 @@ class WorkflowActivity(models.Model):
         """
         # Lets try to create an appropriate entry in the WorkflowHistory table
         current_state = self.current_state()
+        participant = Participant.objects.get(workflowactivity=self, user=user, disabled=False)
         if current_state:
             final_step = WorkflowHistory(
                     workflowactivity=self,
                     state=current_state.state,
                     log_type=WorkflowHistory.TRANSITION,
                     note=__('Workflow forced to stop! Reason given: %s') % reason,
-                    created_by=user,
+                    participant=participant,
                     deadline=None
                 )
             final_step.save()
 
         self.completed_on = datetime.datetime.today()
         self.save()
+
+
+class Participant(models.Model):
+    """
+    Defines which users have what roles in a particular run of a workflow
+    """
+    user = models.ForeignKey(User)
+    workflowactivity = models.ForeignKey(WorkflowActivity, related_name='participants')
+    disabled = models.BooleanField(default=False)
+
+    def __unicode__(self):
+        name = self.user.get_full_name()
+        name = name if name else self.user.username
+        disabled = _(' (disabled)') if self.disabled else ''
+        return '%s%s' % (name, disabled)
+
+    class Meta:
+        ordering = ['-disabled', 'workflowactivity', 'user']
+        verbose_name = _('Participant')
+        verbose_name_plural = _('Participants')
+        unique_together = ('user', 'workflowactivity')
 
 
 class WorkflowHistory(models.Model):
@@ -419,7 +523,10 @@ class WorkflowHistory(models.Model):
             help_text=_('The transition relating to this happening in the workflow history')
         )
     note = models.TextField(_('Note'), blank=True, default='')
-    created_by = models.ForeignKey(User)
+    participant = models.ForeignKey(
+            Participant,
+            help_text=_('The participant who triggered this happening in the workflow history')
+        )
     created_on = models.DateTimeField(auto_now_add=True)
     deadline = models.DateTimeField(
             _('Deadline'), blank=True, null=True,
