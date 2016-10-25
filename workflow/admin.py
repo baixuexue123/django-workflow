@@ -11,7 +11,7 @@ from .models import (
 
 @admin.register(Workflow)
 class WorkflowAdmin(admin.ModelAdmin):
-    list_display = ['name', 'description', 'status', 'created_by', 'created_on']
+    list_display = ['name', 'description', 'status', 'slug', 'created_by', 'created_on']
     search_fields = ['name', 'description']
     save_on_top = True
     list_filter = ['status']
@@ -49,15 +49,15 @@ class WorkflowHistoryAdmin(admin.ModelAdmin):
     list_filter = ['log_type']
 
 
-@admin.register(WorkflowModelRelation)
-class WorkflowModelRelationAdmin(admin.ModelAdmin):
+@admin.register(WorkflowObjectRelation)
+class WorkflowObjectRelationAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'content_object', 'workflow'
+        'id', 'content_type', 'workflow'
     ]
 
 
-@admin.register(WorkflowObjectRelation)
-class WorkflowObjectRelationAdmin(admin.ModelAdmin):
+@admin.register(WorkflowModelRelation)
+class WorkflowModelRelationAdmin(admin.ModelAdmin):
     list_display = [
         'id', 'content_type', 'workflow'
     ]

@@ -8,6 +8,8 @@ from django.utils.translation import ugettext_lazy as _, ugettext as __
 from django.contrib.auth.models import User, Group
 from django.contrib.contenttypes import generic
 from django.contrib.contenttypes.models import ContentType
+from django.utils.http import urlquote
+from django.utils.text import slugify
 
 from workflow.signals import (
     workflow_started, workflow_pre_change, workflow_post_change,
@@ -37,7 +39,7 @@ class Workflow(models.Model):
 
     name = models.CharField(_('Workflow Name'), max_length=128)
     label = models.CharField(_('Workflow label'), max_length=64)
-    slug = models.SlugField(_('Slug'))
+    slug = models.SlugField(_('Slug'), editable=False)
     description = models.TextField(_('Description'), blank=True, default='')
     status = models.IntegerField(_('Status'), choices=STATUS_CHOICE, default=DEFINITION)
     created_by = models.ForeignKey(User)
@@ -50,6 +52,10 @@ class Workflow(models.Model):
         permissions = (
             ('can_manage_workflows', __('Can manage workflows')),
         )
+
+    def save(self, *args, **kwargs):
+        self.slug = slugify(urlquote(self.name))
+        return super(Workflow, self).save(*args, **kwargs)
 
     def is_valid(self):
         """
@@ -208,6 +214,14 @@ class State(models.Model):
         else:
             return None
 
+    def is_visible(self, user):
+        if user in self.users.all():
+            return True
+        for group in self.groups.all():
+            if user in group.user_set.all():
+                return True
+        return False
+
     def __unicode__(self):
         return self.name
 
@@ -254,7 +268,6 @@ class WorkflowActivity(models.Model):
         verbose_name_plural = _('Workflow Activities')
         permissions = (
             ('can_start_workflow', __('Can start a workflow')),
-            ('can_assign_roles', __('Can assign roles'))
         )
 
     def current_state(self):
@@ -433,7 +446,7 @@ class WorkflowHistory(models.Model):
                 workflow_ended.send(sender=self.workflowactivity)
 
     def __unicode__(self):
-        return '%s created by %s' % (self.note, self.user.get_full_name())
+        return '%s created by %s' % (self.note, self.created_by.get_full_name())
 
 
 class WorkflowObjectRelation(models.Model):
@@ -441,7 +454,7 @@ class WorkflowObjectRelation(models.Model):
     Provides a way to give any object a workflow without changing the object's
     model.
     **Attributes:**
-    content
+    content_object
         The object for which the workflow is stored. This can be any instance of
         a Django model.
     workflow
@@ -484,3 +497,12 @@ class WorkflowModelRelation(models.Model):
 
     def __unicode__(self):
         return '%s - %s' % (self.content_type.name, self.workflow.name)
+
+    @classmethod
+    def get_workflow(cls, model):
+        content_type = ContentType.objects.filter(model=model._meta.model_name).first()
+        if not content_type:
+            return None
+        self = cls.objects.filter(content_type=content_type).first()
+        if self:
+            return self.workflow
