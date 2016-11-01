@@ -159,23 +159,6 @@ class Workflow(models.Model):
         return self.name
 
 
-class Role(models.Model):
-    """
-    定义User在一个工作流的生命周期内所担任的角色
-    """
-    name = models.CharField(_('Name of Role'), max_length=64)
-    description = models.TextField(_('Description'), blank=True, default='')
-    workflow = models.ForeignKey(Workflow, related_name='roles')
-
-    def __unicode__(self):
-        return self.name
-
-    class Meta:
-        ordering = ['workflow', 'name']
-        verbose_name = _('Role')
-        verbose_name_plural = _('Roles')
-
-
 class State(models.Model):
     """
     Represents a specific state that a thing can be in during its progress
@@ -265,6 +248,14 @@ class Transition(models.Model):
     class Meta:
         verbose_name = _('Transition')
         verbose_name_plural = _('Transitions')
+
+    def has_perm_use(self, user):
+        if user in self.users.all():
+            return True
+        # 两个列表存在交集
+        if len(set(user.groups.all()) & set(self.groups.all())) > 0:
+            return True
+        return False
 
 
 class WorkflowActivity(models.Model):
