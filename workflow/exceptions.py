@@ -1,40 +1,44 @@
 # -*- coding: utf-8 -*-
 
 
-class UnableToActivateWorkflow(Exception):
+class WorkflowException(Exception):
+    pass
+
+
+class UnableToActivateWorkflow(WorkflowException):
     """
     To be raised if unable to activate the workflow because it did not pass the
     validation steps
     """
 
 
-class UnableToStartWorkflow(Exception):
+class UnableToStartWorkflow(WorkflowException):
     """
     To be raised if a WorkflowActivity is unable to start a workflow
     """
 
 
-class UnableToProgressWorkflow(Exception):
+class UnableToProgressWorkflow(WorkflowException):
     """
     To be raised if the WorkflowActivity is unable to progress a workflow with a
     particular transition.
     """
 
 
-class UnableToAddCommentToWorkflow(Exception):
+class UnableToAddCommentToWorkflow(WorkflowException):
     """
     To be raised if the WorkflowActivity is unable to log a comment in the
     WorkflowHistory
     """
 
 
-class UnableToDisableParticipant(Exception):
+class UnableToDisableParticipant(WorkflowException):
     """
     To be raised if the WorkflowActivity is unable to disable a participant
     """
 
 
-class UnableToEnableParticipant(Exception):
+class UnableToEnableParticipant(WorkflowException):
     """
     To be raised if the WorkflowActivity is unable to enable a participant
     """
