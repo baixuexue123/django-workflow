@@ -7,7 +7,7 @@ from django.db import models
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.translation import ugettext_lazy as _, ugettext as __
 from django.contrib.auth.models import User, Group
-from django.contrib.contenttypes import generic
+from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.utils.http import urlquote
 from django.utils.text import slugify
@@ -189,7 +189,6 @@ class State(models.Model):
     # view the item in this state.
     users = models.ManyToManyField(User, blank=True)
     groups = models.ManyToManyField(Group, blank=True)
-    # 下面两个字段指定这个状态的过期时间
     # TODO models.DurationField
     estimation_value = models.IntegerField(
             _('Estimated time (value)'), default=0,
@@ -215,16 +214,16 @@ class State(models.Model):
         else:
             return None
 
+    def can_view_users(self):
+        return User.objects.filter(
+                    Q(groups__in=self.groups.all()) | Q(id__in=self.users.values_list('id', flat=True))
+                ).all().distinct()
+
     def has_perm_view(self, user):
-        if user in self.users.all():
-            return True
-        # 两个列表存在交集
-        if len(set(user.groups.all()) & set(self.groups.all())) > 0:
-            return True
-        return False
+        return user in self.can_view_users()
 
     def __unicode__(self):
-        return self.name
+        return '%s - %s' % (self.name, self.workflow)
 
 
 class Transition(models.Model):
@@ -242,20 +241,20 @@ class Transition(models.Model):
     users = models.ManyToManyField(User, blank=True)
     groups = models.ManyToManyField(Group, blank=True)
 
-    def __unicode__(self):
-        return self.name
-
     class Meta:
         verbose_name = _('Transition')
         verbose_name_plural = _('Transitions')
 
+    def __unicode__(self):
+        return self.name
+
+    def can_use_users(self):
+        return User.objects.filter(
+                    Q(groups__in=self.groups.all()) | Q(id__in=self.users.values_list('id', flat=True))
+                ).all().distinct()
+
     def has_perm_use(self, user):
-        if user in self.users.all():
-            return True
-        # 两个列表存在交集
-        if len(set(user.groups.all()) & set(self.groups.all())) > 0:
-            return True
-        return False
+        return user in self.can_use_users()
 
 
 class WorkflowActivity(models.Model):
@@ -488,17 +487,17 @@ class Participant(models.Model):
     workflowactivity = models.ForeignKey(WorkflowActivity, related_name='participants')
     disabled = models.BooleanField(default=False)
 
-    def __unicode__(self):
-        name = self.user.get_full_name()
-        name = name if name else self.user.username
-        disabled = _(' (disabled)') if self.disabled else ''
-        return '%s%s' % (name, disabled)
-
     class Meta:
         ordering = ['-disabled', 'workflowactivity', 'user']
         verbose_name = _('Participant')
         verbose_name_plural = _('Participants')
         unique_together = ('user', 'workflowactivity')
+
+    def __unicode__(self):
+        name = self.user.get_full_name()
+        name = name if name else self.user.username
+        disabled = _(' (disabled)') if self.disabled else ''
+        return '%s%s' % (name, disabled)        
 
 
 class WorkflowHistory(models.Model):
@@ -546,6 +545,9 @@ class WorkflowHistory(models.Model):
         verbose_name = _('Workflow History')
         verbose_name_plural = _('Workflow Histories')
 
+    def __unicode__(self):
+        return '%s created by %s' % (self.note, self.created_by.get_full_name())        
+
     def save(self, *args, **kwargs):
         workflow_pre_change.send(sender=self)
         super(WorkflowHistory, self).save(*args, **kwargs)
@@ -559,9 +561,6 @@ class WorkflowHistory(models.Model):
                 workflow_started.send(sender=self.workflowactivity)
             elif self.state.is_end_state:
                 workflow_ended.send(sender=self.workflowactivity)
-
-    def __unicode__(self):
-        return '%s created by %s' % (self.note, self.created_by.get_full_name())
 
 
 class WorkflowObjectRelation(models.Model):
@@ -579,7 +578,7 @@ class WorkflowObjectRelation(models.Model):
 
     content_type = models.ForeignKey(ContentType, related_name='workflow_object')
     content_id = models.PositiveIntegerField()
-    content_object = generic.GenericForeignKey(ct_field='content_type', fk_field='content_id')
+    content_object = GenericForeignKey(ct_field='content_type', fk_field='content_id')
     workflow = models.ForeignKey(Workflow, verbose_name=_('Workflow'))
 
     class Meta:
@@ -603,12 +602,12 @@ class WorkflowModelRelation(models.Model):
         workflow instance.
     """
 
-    class Meta:
-        verbose_name = _('Workflow model relation')
-        verbose_name_plural = _('Workflow model relations')
-
     content_type = models.ForeignKey(ContentType, verbose_name=_('Content Type'))
     workflow = models.ForeignKey(Workflow, verbose_name=_('Workflow'))
+
+    class Meta:
+        verbose_name = _('Workflow model relation')
+        verbose_name_plural = _('Workflow model relations')    
 
     def __unicode__(self):
         return '%s - %s' % (self.content_type.name, self.workflow.name)
